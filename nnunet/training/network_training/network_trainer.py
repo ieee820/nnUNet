@@ -13,6 +13,8 @@ from collections import OrderedDict
 from datetime import datetime
 import torch.backends.cudnn as cudnn
 from abc import abstractmethod
+from datetime import datetime
+
 
 try:
     from apex import amp
@@ -189,9 +191,16 @@ class NetworkTrainer(object):
             fig.savefig(join(self.output_folder, "progress.png"))
             plt.close()
         except IOError:
-            print("failed to plot: ", sys.exc_info())
+            self.print_to_log_file("failed to plot: ", sys.exc_info())
 
-    def print_to_log_file(self, *args, also_print_to_console=True):
+    def print_to_log_file(self, *args, also_print_to_console=True, add_timestamp=True):
+
+        timestamp = time()
+        dt_object = datetime.fromtimestamp(timestamp)
+
+        if add_timestamp:
+            args = ("%s:" % dt_object, *args)
+
         if self.log_file is None:
             maybe_mkdir_p(self.output_folder)
             timestamp = datetime.now()
@@ -211,7 +220,7 @@ class NetworkTrainer(object):
                     f.write("\n")
                 successful = True
             except IOError:
-                print("failed to log: ", sys.exc_info())
+                print("%s: failed to log: " % datetime.fromtimestamp(timestamp), sys.exc_info())
                 sleep(0.5)
                 ctr += 1
         if also_print_to_console:
@@ -232,6 +241,7 @@ class NetworkTrainer(object):
         else:
             optimizer_state_dict = None
 
+        self.print_to_log_file("saving checkpoint...")
         torch.save({
             'epoch': self.epoch + 1,
             'state_dict': state_dict,
@@ -260,7 +270,7 @@ class NetworkTrainer(object):
         self.load_checkpoint(join(self.output_folder, checkpoint), train=train)
 
     def load_checkpoint(self, fname, train=True):
-        print("loading checkpoint", fname, "train=", train)
+        self.print_to_log_file("loading checkpoint", fname, "train=", train)
         if not self.was_initialized:
             self.initialize(train)
         saved_model = torch.load(fname, map_location=torch.device('cuda', torch.cuda.current_device()))
@@ -306,6 +316,8 @@ class NetworkTrainer(object):
                                        "Install it from https://github.com/NVIDIA/apex")
 
     def run_training(self):
+        torch.cuda.empty_cache()
+
         self._maybe_init_amp()
 
         if cudnn.benchmark and cudnn.deterministic:
@@ -327,8 +339,7 @@ class NetworkTrainer(object):
             self.network.train()
             for b in range(self.num_batches_per_epoch):
                 l = self.run_iteration(self.tr_gen, True)
-                l_cpu = l.data.cpu().numpy()
-                train_losses_epoch.append(l_cpu)
+                train_losses_epoch.append(l)
 
             self.all_tr_losses.append(np.mean(train_losses_epoch))
             self.print_to_log_file("train loss : %.4f" % self.all_tr_losses[-1])
@@ -339,7 +350,7 @@ class NetworkTrainer(object):
                 val_losses = []
                 for b in range(self.num_val_batches_per_epoch):
                     l = self.run_iteration(self.val_gen, False, True)
-                    val_losses.append(l.data.cpu().numpy())
+                    val_losses.append(l)
                 self.all_val_losses.append(np.mean(val_losses))
                 self.print_to_log_file("val loss (train=False): %.4f" % self.all_val_losses[-1])
 
@@ -349,12 +360,11 @@ class NetworkTrainer(object):
                     val_losses = []
                     for b in range(self.num_val_batches_per_epoch):
                         l = self.run_iteration(self.val_gen, False)
-                        val_losses.append(l.data.cpu().numpy())
+                        val_losses.append(l)
                     self.all_val_losses_tr_mode.append(np.mean(val_losses))
                     self.print_to_log_file("val loss (train=True): %.4f" % self.all_val_losses_tr_mode[-1])
 
             epoch_end_time = time()
-            self.print_to_log_file("This epoch took %f s" % (epoch_end_time-epoch_start_time))
 
             self.update_train_loss_MA()  # needed for lr scheduler and stopping of training
 
@@ -364,6 +374,8 @@ class NetworkTrainer(object):
                 break
 
             self.epoch += 1
+            self.print_to_log_file("This epoch took %f s\n" % (epoch_end_time-epoch_start_time))
+
         self.save_checkpoint(join(self.output_folder, "model_final_checkpoint.model"))
         # now we can delete latest as it will be identical with final
         if isfile(join(self.output_folder, "model_latest.model")):
@@ -408,7 +420,11 @@ class NetworkTrainer(object):
                 self.val_eval_criterion_MA = self.all_val_eval_metrics[-1]
         else:
             if len(self.all_val_eval_metrics) == 0:
-                self.val_eval_criterion_MA = self.val_eval_criterion_alpha * self.val_eval_criterion_MA + (
+                """
+                We here use alpha * old - (1 - alpha) * new because new in this case is the vlaidation loss and lower 
+                is better, so we need to negate it. 
+                """
+                self.val_eval_criterion_MA = self.val_eval_criterion_alpha * self.val_eval_criterion_MA - (
                             1 - self.val_eval_criterion_alpha) * \
                                              self.all_val_losses[-1]
             else:
@@ -504,10 +520,13 @@ class NetworkTrainer(object):
         self.optimizer.zero_grad()
 
         output = self.network(data)
+        del data
         l = self.loss(output, target)
 
         if run_online_evaluation:
             self.run_online_evaluation(output, target)
+
+        del target
 
         if do_backprop:
             if not self.fp16 or amp is None:
@@ -517,7 +536,7 @@ class NetworkTrainer(object):
                     scaled_loss.backward()
             self.optimizer.step()
 
-        return l
+        return l.detach().cpu().numpy()
 
     def run_online_evaluation(self, *args, **kwargs):
         """

@@ -34,7 +34,9 @@ def predict_save_to_queue(preprocess_fn, q, list_of_lists, output_files, segs_fr
     for i, l in enumerate(list_of_lists):
         try:
             output_file = output_files[i]
+            print("preprocessing", output_file)
             d, _, dct = preprocess_fn(l)
+            print(output_file, dct)
             if segs_from_prev_stage[i] is not None:
                 assert isfile(segs_from_prev_stage[i]) and segs_from_prev_stage[i].endswith(".nii.gz"), "segs_from_prev_stage" \
                                                                                                   " must point to a " \
@@ -173,6 +175,11 @@ def predict_cases(model, list_of_lists, output_filenames, folds, save_npz, num_t
 
         softmax = np.vstack(softmax)
         softmax_mean = np.mean(softmax, 0)
+
+        transpose_forward = trainer.plans.get('transpose_forward')
+        if transpose_forward is not None:
+            transpose_backward = trainer.plans.get('transpose_backward')
+            softmax_mean = softmax_mean.transpose([0] + [i + 1 for i in transpose_backward])
 
         if save_npz:
             npz_file = output_filename[:-7] + ".npz"

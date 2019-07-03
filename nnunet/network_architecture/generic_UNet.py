@@ -354,8 +354,9 @@ class Generic_UNet(SegmentationNetwork):
         if self.upscale_logits:
             self.upscale_logits_ops = nn.ModuleList(self.upscale_logits_ops) # lambda x:x is not a Module so we need to distinguish here
 
-        self.apply(self.weightInitializer)
-        #self.apply(print_module_training_status)
+        if self.weightInitializer is not None:
+            self.apply(self.weightInitializer)
+            #self.apply(print_module_training_status)
 
     def forward(self, x):
         skips = []
@@ -400,8 +401,8 @@ class Generic_UNet(SegmentationNetwork):
         npool = len(pool_op_kernel_sizes)
 
         map_size = np.array(patch_size)
-        tmp = 5 * np.prod(map_size) * base_num_features + num_modalities * np.prod(map_size) + \
-              num_classes * np.prod(map_size)
+        tmp = np.int64(5 * np.prod(map_size) * base_num_features + num_modalities * np.prod(map_size) + \
+              num_classes * np.prod(map_size))
 
         num_feat = base_num_features
 
